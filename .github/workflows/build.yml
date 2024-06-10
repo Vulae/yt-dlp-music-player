@@ -10,7 +10,7 @@ jobs:
     name: release ${{ matrix.target }}
     runs-on: ubuntu-latest
     strategy:
-      fail-false: false
+      fail-fast: false
       matrix:
         target: [ x86_64-pc-windows-gnu ]
     steps:
