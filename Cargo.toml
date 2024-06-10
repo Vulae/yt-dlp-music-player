@@ -1,0 +1,12 @@
+[package]
+name = "yt-dlp-music-player"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = { version = "4.5.6", features = ["derive"] }
+rand = "0.8.5"
+rodio = { version = "0.18.1", features = ["symphonia-all"] }
+url = "2.5.0"
