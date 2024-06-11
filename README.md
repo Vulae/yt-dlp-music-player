@@ -5,6 +5,8 @@ Downloads & plays music from specified YouTube playlist.
 
 # Usage
 
+Requires [yt-dlp](https://github.com/yt-dlp/yt-dlp) & [ffmpeg](https://ffmpeg.org/).
+
 > ⚠ **Usage will probably change a lot in the near future.**
 
 > ⚠ **This is only tested for windows, but may have a very slim chance of actually working on other platforms.**
