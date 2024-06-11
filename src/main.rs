@@ -91,17 +91,21 @@ impl ApplicationHandler for App {
                 .with_visible(false)
         ).unwrap();
 
-        let (tx, rx) = mpsc::sync_channel(32);
+        #[cfg(not(target_os = "windows"))]
+        let hwnd = None;
 
+        #[cfg(target_os = "windows")]
         let hwnd = match window.window_handle().expect("Failed to get window handle").as_raw() {
-            RawWindowHandle::Win32(h) =>  h.hwnd.get() as *mut c_void,
+            RawWindowHandle::Win32(h) => Some(h.hwnd.get() as *mut c_void),
             _ => unreachable!(),
         };
+
         let mut controls = MediaControls::new(PlatformConfig {
             dbus_name: "yt-dlp-music-player",
             display_name: "yt-dlp-music-player",
-            hwnd: Some(hwnd)
+            hwnd: hwnd
         }).expect("Failed to create media controls");
+        let (tx, rx) = mpsc::sync_channel(32);
         controls.attach(move |e| tx.send(e).unwrap()).expect("Failed to attach to media controls");
         
         let (stream, stream_handle) = rodio::OutputStream::try_default().expect("Failed to create output stream");
