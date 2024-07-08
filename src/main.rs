@@ -1,6 +1,8 @@
 
-use std::{error::Error, ffi::c_void, fs::{self, File}, io::BufReader, path::PathBuf, process::Command, sync::mpsc::{self, Receiver}, time::Duration};
-use clap::Parser;
+mod config;
+
+use std::{error::Error, ffi::c_void, fs, io::{BufReader, Cursor}, path::PathBuf, process::Command, sync::mpsc::{self, Receiver}, time::Duration};
+use config::Config;
 use rand::{thread_rng, seq::SliceRandom};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
@@ -47,8 +49,11 @@ impl App {
         if let Some(sink) = &self.sink {
             println!("Playing: {}", song_file.file_name().to_string_lossy());
     
-            let file = File::open(song_file.path())?;
-            let source = rodio::Decoder::new(BufReader::new(file))?;
+            // Loading the whole file to prevent stuttering.
+            // Pretty sure this *should* be fine as audio data shouldn't really be > 50MiB.
+            let data = fs::read(song_file.path())?;
+            let source = rodio::Decoder::new(BufReader::new(Cursor::new(data)))?;
+            // Could probably use rodio::Buffered, but that may add a delay on audio controls. I don't really know though, haven't tested it yet.
             
             duration = source.total_duration();
 
@@ -101,7 +106,7 @@ impl ApplicationHandler for App {
         };
 
         let mut controls = MediaControls::new(PlatformConfig {
-            dbus_name: "yt-dlp-music-player",
+            dbus_name: "org.vulae.YtDlpMusicPlayer",
             display_name: "yt-dlp-music-player",
             hwnd: hwnd
         }).expect("Failed to create media controls");
@@ -195,21 +200,6 @@ impl ApplicationHandler for App {
 
 
 
-
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-#[command(propagate_version = true)]
-struct Cli {
-    #[arg(index = 1)]
-    yt_dlp_path: PathBuf,
-    #[arg(index = 2)]
-    ffmpeg_path: PathBuf,
-    #[arg(index = 3)]
-    yt_playlist: String,
-    #[arg(short, long, default_value_t = false)]
-    skip_update: bool,
-}
-
 fn update_playlist(playlist_archive_directory: &PathBuf, yt_dlp_path: &PathBuf, ffmpeg_path: &PathBuf, url: &url::Url) -> Result<(), Box<dyn Error>> {
     // Update playlist archive directory with yt-dlp
     println!("Updating playlist archive. . .");
@@ -230,10 +220,10 @@ fn update_playlist(playlist_archive_directory: &PathBuf, yt_dlp_path: &PathBuf, 
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let args = Cli::parse();
+    let config = Config::load()?;
 
     // Get playlist ID
-    let playlist_id: String = match url::Url::parse(&args.yt_playlist) {
+    let playlist_id: String = match url::Url::parse(&config.yt_playlist) {
         Ok(url) => if let Some(playlist_id) = url.query_pairs().find_map(|(name, value)| {
             if name == "list" {
                 Some(value)
@@ -245,7 +235,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         } else {
             panic!("Invalid URL.");
         },
-        Err(_) => args.yt_playlist.clone()
+        Err(_) => config.yt_playlist.clone()
     };
     println!("Playlist ID: {}", &playlist_id);
 
@@ -255,8 +245,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&playlist_directory)?;
     println!("Playlist archive: {:#?}", &playlist_directory);
 
-    if !args.skip_update {
-        update_playlist(&playlist_directory, &args.yt_dlp_path, &args.ffmpeg_path, &url::Url::parse(&format!("https://www.youtube.com/playlist?list={}", &playlist_id))?)?;
+    if !config.skip_playlist_update {
+        update_playlist(&playlist_directory, &config.yt_dlp_path, &config.ffmpeg_path, &url::Url::parse(&format!("https://www.youtube.com/playlist?list={}", &playlist_id))?)?;
     }
 
     let event_loop = EventLoop::new()?;

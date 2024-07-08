@@ -1,0 +1,7 @@
+{
+    "_comment": "Config can be overridden by CLI arguments.",
+    "yt_dlp_path": "**YT-DLP EXECUTABLE PATH**",
+    "ffmpeg_path": "**FFMPEG EXECUTABLE PATH**",
+    "yt_playlist": "**YOUTUBE PLAYLIST ID OR URL**",
+    "skip_playlist_update": false
+}
