@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+cfg-if = "1.0.0"
 clap = { version = "4.5.6", features = ["derive"] }
 rand = "0.8.5"
 raw-window-handle = "0.6.2"
@@ -13,5 +14,6 @@ rodio = { version = "0.18.1", features = ["symphonia-all"] }
 serde = { version = "1.0.204", features = ["derive"] }
 serde_json = "1.0.120"
 souvlaki = "0.7.3"
+tray-icon = "0.14.3"
 url = "2.5.0"
 winit = "0.30.1"

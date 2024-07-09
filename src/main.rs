@@ -9,11 +9,22 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, PlatformConfig};
 use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::{Window, WindowId}};
 use rand::{thread_rng, seq::SliceRandom};
+use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
+use cfg_if::cfg_if;
+
+
+
+cfg_if! {
+    if #[cfg(not(debug_assertions))] {
+        #![windows_subsystem = "windows"]
+    }
+}
 
 
 
 struct App {
     window: Option<Window>,
+    tray_icon: Option<TrayIcon>,
     controls: Option<MediaControls>,
     controls_recv: Option<Receiver<MediaControlEvent>>,
     player: Player,
@@ -23,6 +34,7 @@ impl App {
     pub fn new(player: Player) -> App {
         App {
             window: None,
+            tray_icon: None,
             controls: None,
             controls_recv: None,
             player,
@@ -60,33 +72,140 @@ impl App {
         }
         Ok(())
     }
-}
 
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window = event_loop.create_window(
+
+
+    fn create_window(event_loop: &ActiveEventLoop) -> Result<Window, Box<dyn Error>> {
+        Ok(event_loop.create_window(
             Window::default_attributes()
                 .with_visible(false)
-        ).unwrap();
+                .with_title("yt-dlp-music-player")
+        )?)
+    }
 
+    fn create_tray_icon() -> Result<TrayIcon, Box<dyn Error>> {
+        // TODO: Icon (Icon as current song image.)
+        let icon = tray_icon::Icon::from_rgba(vec![255, 0, 255, 255], 1, 1)?;
+        Ok(TrayIconBuilder::new()
+            .with_title("yt-dlp-music-player")
+            .with_tooltip("yt-dlp-music-player\nLeft: Next\nRight: Previous\nMiddle: Exit")
+            .with_id("yt-dlp-music-player")
+            .with_icon(icon)
+            .build()?)
+    }
+
+    fn create_controls(window: &Window) -> Result<MediaControls, Box<dyn Error>> {
         #[cfg(not(target_os = "windows"))]
         let hwnd = None;
 
         #[cfg(target_os = "windows")]
-        let hwnd = match window.window_handle().expect("Failed to get window handle").as_raw() {
+        let hwnd = match window.window_handle()?.as_raw() {
             RawWindowHandle::Win32(h) => Some(h.hwnd.get() as *mut c_void),
-            _ => unreachable!(),
+            _ => panic!("Could not get HWND"),
         };
 
-        let mut controls = MediaControls::new(PlatformConfig {
+        let controls = MediaControls::new(PlatformConfig {
             dbus_name: "org.vulae.YtDlpMusicPlayer",
             display_name: "yt-dlp-music-player",
             hwnd: hwnd
         }).expect("Failed to create media controls");
+
+        Ok(controls)
+    }
+
+
+
+    fn process_media_events(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Box<dyn Error>> {
+        let mut events = Vec::new();
+        if let Some(rx) = &self.controls_recv {
+            for event in rx.try_iter() {
+                events.push(event);
+            }
+        }
+
+        for event in events {
+            match event {
+                MediaControlEvent::Play => {
+                    self.player.play();
+                    self.update_playback(MediaPlayback::Playing { progress: None })?;
+                },
+                MediaControlEvent::Pause => {
+                    self.player.pause();
+                    self.update_playback(MediaPlayback::Paused { progress: None })?;
+                },
+                MediaControlEvent::Toggle => {
+                    if !self.player.is_playing() {
+                        self.player.play();
+                        self.update_playback(MediaPlayback::Playing { progress: None })?;
+                    } else {
+                        self.player.pause();
+                        self.update_playback(MediaPlayback::Paused { progress: None })?;
+                    }
+                },
+                MediaControlEvent::Next => {
+                    self.next_song()?;
+                },
+                MediaControlEvent::Previous => println!("Previous Song"),
+                MediaControlEvent::Stop => {
+                    self.player.stop();
+                    self.update_playback(MediaPlayback::Stopped)?;
+                },
+                MediaControlEvent::Seek(direction) => println!("Seek: {:#?}", direction),
+                MediaControlEvent::SeekBy(direction, duration) => println!("Seek By: {:#?} {:#?}", direction, duration),
+                MediaControlEvent::SetPosition(position) => println!("Set Position: {:#?}", position),
+                MediaControlEvent::SetVolume(volume) => println!("Set Volume: {}", volume),
+                MediaControlEvent::OpenUri(uri) => println!("Open URI: {}", uri),
+                MediaControlEvent::Raise => println!("Raise"),
+                MediaControlEvent::Quit => event_loop.exit(),
+            }
+        }
+
+        Ok(())
+    }
+
+    fn process_tray_icon_events(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Box<dyn Error>> {
+        while let Ok(event) = TrayIconEvent::receiver().try_recv() {
+            match event {
+                TrayIconEvent::Click {
+                    id: _,
+                    position: _,
+                    rect: _,
+                    button: tray_icon::MouseButton::Left,
+                    button_state: tray_icon::MouseButtonState::Down
+                } => self.next_song()?,
+                TrayIconEvent::Click {
+                    id: _,
+                    position: _,
+                    rect: _,
+                    button: tray_icon::MouseButton::Right,
+                    button_state: tray_icon::MouseButtonState::Down
+                } => println!("Previous Song"),
+                TrayIconEvent::Click {
+                    id: _,
+                    position: _,
+                    rect: _,
+                    button: tray_icon::MouseButton::Middle,
+                    button_state: tray_icon::MouseButtonState::Down
+                } => event_loop.exit(),
+                _ => { },
+            }
+        }
+        Ok(())
+    }
+
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let window = App::create_window(event_loop).unwrap();
+        let tray_icon = App::create_tray_icon().unwrap();
+        let mut controls = App::create_controls(&window).unwrap();
+        
         let (tx, rx) = mpsc::sync_channel(32);
         controls.attach(move |e| tx.send(e).unwrap()).expect("Failed to attach to media controls");
 
         self.window = Some(window);
+        self.tray_icon = Some(tray_icon);
         self.controls = Some(controls);
         self.controls_recv = Some(rx);
 
@@ -101,55 +220,15 @@ impl ApplicationHandler for App {
     }
 
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: winit::event::StartCause) {
-        let mut events = Vec::new();
-        if let Some(rx) = &self.controls_recv {
-            for event in rx.try_iter() {
-                events.push(event);
-            }
-        }
-        
-        for event in events {
-            match event {
-                MediaControlEvent::Play => {
-                    self.player.play();
-                    self.update_playback(MediaPlayback::Playing { progress: None }).unwrap();
-                },
-                MediaControlEvent::Pause => {
-                    self.player.pause();
-                    self.update_playback(MediaPlayback::Paused { progress: None }).unwrap();
-                },
-                MediaControlEvent::Toggle => {
-                    if !self.player.is_playing() {
-                        self.player.play();
-                        self.update_playback(MediaPlayback::Playing { progress: None }).unwrap();
-                    } else {
-                        self.player.pause();
-                        self.update_playback(MediaPlayback::Paused { progress: None }).unwrap();
-                    }
-                },
-                MediaControlEvent::Next => {
-                    self.next_song().expect("Failed to start next song");
-                },
-                MediaControlEvent::Previous => println!("Previous Song"),
-                MediaControlEvent::Stop => {
-                    self.player.stop();
-                    self.update_playback(MediaPlayback::Stopped).unwrap();
-                },
-                MediaControlEvent::Seek(direction) => println!("Seek: {:#?}", direction),
-                MediaControlEvent::SeekBy(direction, duration) => println!("Seek By: {:#?} {:#?}", direction, duration),
-                MediaControlEvent::SetPosition(position) => println!("Set Position: {:#?}", position),
-                MediaControlEvent::SetVolume(volume) => println!("Set Volume: {}", volume),
-                MediaControlEvent::OpenUri(uri) => println!("Open URI: {}", uri),
-                MediaControlEvent::Raise => println!("Raise"),
-                MediaControlEvent::Quit => event_loop.exit(),
-            }
-        }
-
         match cause {
             winit::event::StartCause::Poll => {
+                self.process_media_events(&event_loop).unwrap();
+                self.process_tray_icon_events(&event_loop).unwrap();
+
                 if self.player.is_finished() {
                     self.next_song().expect("Failed to play next song");
                 }
+
                 std::thread::sleep(Duration::from_millis(100));
             },
             winit::event::StartCause::Init => event_loop.set_control_flow(ControlFlow::Poll),
