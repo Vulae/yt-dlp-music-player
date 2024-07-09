@@ -1,13 +1,14 @@
 
 mod config;
+mod player;
 
-use std::{error::Error, ffi::c_void, fs, io::{BufReader, Cursor}, path::PathBuf, process::Command, sync::mpsc::{self, Receiver}, time::Duration};
+use std::{error::Error, ffi::c_void, fs, path::PathBuf, process::Command, sync::mpsc::{self, Receiver}, time::Duration};
 use config::Config;
-use rand::{thread_rng, seq::SliceRandom};
+use player::{Player, Song};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
 use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, PlatformConfig};
 use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::{Window, WindowId}};
+use rand::{thread_rng, seq::SliceRandom};
 
 
 
@@ -17,59 +18,24 @@ struct App {
     window: Option<Window>,
     controls: Option<MediaControls>,
     controls_recv: Option<Receiver<MediaControlEvent>>,
-    stream: Option<(OutputStream, OutputStreamHandle)>,
-    sink: Option<Sink>,
+    player: Option<Player>,
 }
 
 impl App {
     fn next_song(&mut self) -> Result<(), Box<dyn Error>> {
-        let binding = fs::read_dir(&self.playlist_directory)?
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut song_queue = binding
-            .iter()
-            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".m4a"))
-            .collect::<Vec<_>>();
 
-        song_queue.shuffle(&mut thread_rng());
+        self.player.as_mut().unwrap().next_song();
+        let song = self.player.as_mut().unwrap().current_song();
 
-        let song_file = song_queue[0];
-        let mut duration = None;
+        println!("Playing: {}", song.name());
 
-        // Cover can either be WEBP or JPEG.
-        // why :(
-        let mut cover_file = song_file.file_name().to_string_lossy().trim_end_matches(".m4a").to_string();
-        cover_file += ".webp";
-        if fs::metadata(&cover_file).is_err() {
-            cover_file = cover_file.trim_end_matches(".webp").to_string();
-            cover_file += ".jpg";
-        }
-        let mut cover_file_path = self.playlist_directory.clone();
-        cover_file_path.push(cover_file);
+        self.update_metadata(MediaMetadata {
+            title: Some(&song.name()),
+            ..MediaMetadata::default()
+        })?;
 
-        if let Some(sink) = &self.sink {
-            println!("Playing: {}", song_file.file_name().to_string_lossy());
-    
-            // Loading the whole file to prevent stuttering.
-            // Pretty sure this *should* be fine as audio data shouldn't really be > 50MiB.
-            let data = fs::read(song_file.path())?;
-            let source = rodio::Decoder::new(BufReader::new(Cursor::new(data)))?;
-            // Could probably use rodio::Buffered, but that may add a delay on audio controls. I don't really know though, haven't tested it yet.
-            
-            duration = source.total_duration();
-
-            sink.append(source);
-            sink.play();
-        }
-
-        if self.sink.is_some() {
-            self.update_playback(souvlaki::MediaPlayback::Playing { progress: None })?;
-            self.update_metadata(MediaMetadata {
-                title: Some(&song_file.file_name().to_string_lossy()),
-                duration,
-                cover_url: Some(&cover_file_path.clone().to_string_lossy()), // FIXME: Why doesn't this display?
-                ..MediaMetadata::default()
-            })?;
-        }
+        self.update_playback(souvlaki::MediaPlayback::Playing { progress: None })?;
+        self.player.as_mut().unwrap().play();
 
         Ok(())
     }
@@ -112,16 +78,16 @@ impl ApplicationHandler for App {
         }).expect("Failed to create media controls");
         let (tx, rx) = mpsc::sync_channel(32);
         controls.attach(move |e| tx.send(e).unwrap()).expect("Failed to attach to media controls");
-        
-        let (stream, stream_handle) = rodio::OutputStream::try_default().expect("Failed to create output stream");
-        let sink = Sink::try_new(&stream_handle).expect("Failed to create sink");
-        sink.set_volume(0.25);
 
         self.window = Some(window);
         self.controls = Some(controls);
         self.controls_recv = Some(rx);
-        self.stream = Some((stream, stream_handle));
-        self.sink = Some(sink);
+
+        let mut songs = Song::load_playlist_directory(&self.playlist_directory).expect("Failed to load playlist directory");
+        songs.shuffle(&mut thread_rng()); // TODO: Implement actual song shuffling in Player.
+        self.player = Some(Player::new(songs).expect("Failed to initialize audio player"));
+
+        self.player.as_mut().unwrap().set_volume(0.25);
 
         self.next_song().expect("Failed to start next song");
     }
@@ -144,40 +110,29 @@ impl ApplicationHandler for App {
         for event in events {
             match event {
                 MediaControlEvent::Play => {
-                    if let Some(sink) = &self.sink {
-                        sink.play();
-                        self.update_playback(MediaPlayback::Playing { progress: None }).unwrap();
-                    }
+                    self.player.as_mut().unwrap().play();
+                    self.update_playback(MediaPlayback::Playing { progress: None }).unwrap();
                 },
                 MediaControlEvent::Pause => {
-                    if let Some(sink) = &self.sink {
-                        sink.pause();
+                    self.player.as_mut().unwrap().pause();
+                    self.update_playback(MediaPlayback::Paused { progress: None }).unwrap();
+                },
+                MediaControlEvent::Toggle => {
+                    if !self.player.as_mut().unwrap().is_playing() {
+                        self.player.as_mut().unwrap().play();
+                        self.update_playback(MediaPlayback::Playing { progress: None }).unwrap();
+                    } else {
+                        self.player.as_mut().unwrap().pause();
                         self.update_playback(MediaPlayback::Paused { progress: None }).unwrap();
                     }
                 },
-                MediaControlEvent::Toggle => {
-                    if let Some(sink) = &self.sink {
-                        if sink.is_paused() {
-                            sink.play();
-                            self.update_playback(MediaPlayback::Playing { progress: None }).unwrap();
-                        } else {
-                            sink.pause();
-                            self.update_playback(MediaPlayback::Paused { progress: None }).unwrap();
-                        }
-                    }
-                },
                 MediaControlEvent::Next => {
-                    if let Some(sink) = &self.sink {
-                        sink.clear();
-                    }
                     self.next_song().expect("Failed to start next song");
                 },
                 MediaControlEvent::Previous => println!("Previous Song"),
                 MediaControlEvent::Stop => {
-                    if let Some(sink) = &self.sink {
-                        sink.clear();
-                        self.update_playback(MediaPlayback::Stopped).unwrap();
-                    }
+                    self.player.as_mut().unwrap().stop();
+                    self.update_playback(MediaPlayback::Stopped).unwrap();
                 },
                 MediaControlEvent::Seek(direction) => println!("Seek: {:#?}", direction),
                 MediaControlEvent::SeekBy(direction, duration) => println!("Seek By: {:#?} {:#?}", direction, duration),
@@ -190,13 +145,17 @@ impl ApplicationHandler for App {
         }
 
         match cause {
-            winit::event::StartCause::Poll => std::thread::sleep(Duration::from_millis(100)),
+            winit::event::StartCause::Poll => {
+                if self.player.as_mut().unwrap().is_finished() {
+                    self.next_song().expect("Failed to play next song");
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            },
             winit::event::StartCause::Init => event_loop.set_control_flow(ControlFlow::Poll),
             _ => { },
         }
     }
 }
-
 
 
 
