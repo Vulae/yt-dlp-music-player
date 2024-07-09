@@ -12,20 +12,27 @@ use rand::{thread_rng, seq::SliceRandom};
 
 
 
-#[derive(Default)]
 struct App {
-    playlist_directory: PathBuf,
     window: Option<Window>,
     controls: Option<MediaControls>,
     controls_recv: Option<Receiver<MediaControlEvent>>,
-    player: Option<Player>,
+    player: Player,
 }
 
 impl App {
+    pub fn new(player: Player) -> App {
+        App {
+            window: None,
+            controls: None,
+            controls_recv: None,
+            player,
+        }
+    }
+
     fn next_song(&mut self) -> Result<(), Box<dyn Error>> {
 
-        self.player.as_mut().unwrap().next_song();
-        let song = self.player.as_mut().unwrap().current_song();
+        self.player.next_song();
+        let song = self.player.current_song();
 
         println!("Playing: {}", song.name());
 
@@ -35,7 +42,7 @@ impl App {
         })?;
 
         self.update_playback(souvlaki::MediaPlayback::Playing { progress: None })?;
-        self.player.as_mut().unwrap().play();
+        self.player.play();
 
         Ok(())
     }
@@ -83,12 +90,6 @@ impl ApplicationHandler for App {
         self.controls = Some(controls);
         self.controls_recv = Some(rx);
 
-        let mut songs = Song::load_playlist_directory(&self.playlist_directory).expect("Failed to load playlist directory");
-        songs.shuffle(&mut thread_rng()); // TODO: Implement actual song shuffling in Player.
-        self.player = Some(Player::new(songs).expect("Failed to initialize audio player"));
-
-        self.player.as_mut().unwrap().set_volume(0.25);
-
         self.next_song().expect("Failed to start next song");
     }
 
@@ -110,19 +111,19 @@ impl ApplicationHandler for App {
         for event in events {
             match event {
                 MediaControlEvent::Play => {
-                    self.player.as_mut().unwrap().play();
+                    self.player.play();
                     self.update_playback(MediaPlayback::Playing { progress: None }).unwrap();
                 },
                 MediaControlEvent::Pause => {
-                    self.player.as_mut().unwrap().pause();
+                    self.player.pause();
                     self.update_playback(MediaPlayback::Paused { progress: None }).unwrap();
                 },
                 MediaControlEvent::Toggle => {
-                    if !self.player.as_mut().unwrap().is_playing() {
-                        self.player.as_mut().unwrap().play();
+                    if !self.player.is_playing() {
+                        self.player.play();
                         self.update_playback(MediaPlayback::Playing { progress: None }).unwrap();
                     } else {
-                        self.player.as_mut().unwrap().pause();
+                        self.player.pause();
                         self.update_playback(MediaPlayback::Paused { progress: None }).unwrap();
                     }
                 },
@@ -131,7 +132,7 @@ impl ApplicationHandler for App {
                 },
                 MediaControlEvent::Previous => println!("Previous Song"),
                 MediaControlEvent::Stop => {
-                    self.player.as_mut().unwrap().stop();
+                    self.player.stop();
                     self.update_playback(MediaPlayback::Stopped).unwrap();
                 },
                 MediaControlEvent::Seek(direction) => println!("Seek: {:#?}", direction),
@@ -146,7 +147,7 @@ impl ApplicationHandler for App {
 
         match cause {
             winit::event::StartCause::Poll => {
-                if self.player.as_mut().unwrap().is_finished() {
+                if self.player.is_finished() {
                     self.next_song().expect("Failed to play next song");
                 }
                 std::thread::sleep(Duration::from_millis(100));
@@ -208,9 +209,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         update_playlist(&playlist_directory, &config.yt_dlp_path, &config.ffmpeg_path, &url::Url::parse(&format!("https://www.youtube.com/playlist?list={}", &playlist_id))?)?;
     }
 
+    let mut songs = Song::load_playlist_directory(&playlist_directory)?;
+    songs.shuffle(&mut thread_rng()); // TODO: Implement actual song shuffling in Player.
+    let mut player = Player::new(songs)?;
+
+    player.set_volume(0.25);
+
     let event_loop = EventLoop::new()?;
-    let mut app = App::default();
-    app.playlist_directory = playlist_directory;
+    let mut app = App::new(player);
     event_loop.run_app(&mut app)?;
 
     Ok(())
