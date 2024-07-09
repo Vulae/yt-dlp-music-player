@@ -1,4 +1,8 @@
 
+// TODO: Hide console window, only if ran from explorer.exe
+// FIXME: Only auto hide in release mode
+#![windows_subsystem = "windows"]
+
 mod config;
 mod player;
 
@@ -10,15 +14,6 @@ use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, P
 use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::{Window, WindowId}};
 use rand::{thread_rng, seq::SliceRandom};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
-use cfg_if::cfg_if;
-
-
-
-cfg_if! {
-    if #[cfg(not(debug_assertions))] {
-        #![windows_subsystem = "windows"]
-    }
-}
 
 
 
