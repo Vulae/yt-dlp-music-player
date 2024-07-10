@@ -1,7 +1,7 @@
 
 // TODO: Hide console window, only if ran from explorer.exe
 // FIXME: Only auto hide in release mode
-#![windows_subsystem = "windows"]
+// #![windows_subsystem = "windows"]
 
 mod config;
 mod player;
@@ -12,7 +12,6 @@ use player::{Player, Song};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, PlatformConfig};
 use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::{Window, WindowId}};
-use rand::{thread_rng, seq::SliceRandom};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 
@@ -36,9 +35,7 @@ impl App {
         }
     }
 
-    fn next_song(&mut self) -> Result<(), Box<dyn Error>> {
-
-        self.player.next_song();
+    fn update_song(&mut self) -> Result<(), Box<dyn Error>> {
         let song = self.player.current_song();
 
         println!("Playing: {}", song.name());
@@ -49,7 +46,6 @@ impl App {
         })?;
 
         self.update_playback(souvlaki::MediaPlayback::Playing { progress: None })?;
-        self.player.play();
 
         Ok(())
     }
@@ -138,9 +134,15 @@ impl App {
                     }
                 },
                 MediaControlEvent::Next => {
-                    self.next_song()?;
+                    self.player.next_song();
+                    self.update_song()?;
+                    self.player.play();
                 },
-                MediaControlEvent::Previous => println!("Previous Song"),
+                MediaControlEvent::Previous => {
+                    self.player.prev_song();
+                    self.update_song()?;
+                    self.player.play();
+                },
                 MediaControlEvent::Stop => {
                     self.player.stop();
                     self.update_playback(MediaPlayback::Stopped)?;
@@ -167,14 +169,22 @@ impl App {
                     rect: _,
                     button: tray_icon::MouseButton::Left,
                     button_state: tray_icon::MouseButtonState::Down
-                } => self.next_song()?,
+                } => {
+                    self.player.next_song();
+                    self.update_song()?;
+                    self.player.play();
+                },
                 TrayIconEvent::Click {
                     id: _,
                     position: _,
                     rect: _,
                     button: tray_icon::MouseButton::Right,
                     button_state: tray_icon::MouseButtonState::Down
-                } => println!("Previous Song"),
+                } => {
+                    self.player.prev_song();
+                    self.update_song()?;
+                    self.player.play();
+                },
                 TrayIconEvent::Click {
                     id: _,
                     position: _,
@@ -204,7 +214,9 @@ impl ApplicationHandler for App {
         self.controls = Some(controls);
         self.controls_recv = Some(rx);
 
-        self.next_song().expect("Failed to start next song");
+        // FIXME: For some reason this skips first song.
+        self.update_song().unwrap();
+        self.player.play();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -221,7 +233,9 @@ impl ApplicationHandler for App {
                 self.process_tray_icon_events(&event_loop).unwrap();
 
                 if self.player.is_finished() {
-                    self.next_song().expect("Failed to play next song");
+                    self.player.next_song();
+                    self.update_song().unwrap();
+                    self.player.play();
                 }
 
                 std::thread::sleep(Duration::from_millis(100));
@@ -283,8 +297,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         update_playlist(&playlist_directory, &config.yt_dlp_path, &config.ffmpeg_path, &url::Url::parse(&format!("https://www.youtube.com/playlist?list={}", &playlist_id))?)?;
     }
 
-    let mut songs = Song::load_playlist_directory(&playlist_directory)?;
-    songs.shuffle(&mut thread_rng()); // TODO: Implement actual song shuffling in Player.
+    let songs = Song::load_playlist_directory(&playlist_directory)?;
     let mut player = Player::new(songs)?;
 
     player.set_volume(0.25);

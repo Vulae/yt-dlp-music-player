@@ -1,6 +1,23 @@
 
 use std::{error::Error, fs, io::{BufReader, Cursor}, path::PathBuf, time::Duration};
 use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
+use rand::{seq::SliceRandom, thread_rng};
+
+
+
+trait VecGetEnd<T> {
+    fn get_end(&self, index_from_end: usize) -> Option<&T>;
+}
+
+impl<T> VecGetEnd<T> for Vec<T> {
+    fn get_end(&self, index_from_end: usize) -> Option<&T> {
+        if index_from_end >= self.len() {
+            None
+        } else {
+            self.get(self.len() - 1 - index_from_end)
+        }
+    }
+}
 
 
 
@@ -53,7 +70,9 @@ impl Song {
 
 pub struct Player {
     songs: Vec<Song>,
-    index: usize,
+    song_indices: Vec<usize>,
+    song_indices_index: usize,
+    next_song_blacklist_lookbehind_length: usize,
 
     _stream: OutputStream,
     _handle: OutputStreamHandle,
@@ -66,24 +85,55 @@ pub struct Player {
 impl Player {
 
     pub fn new(songs: Vec<Song>) -> Result<Player, Box<dyn Error>> {
+        if songs.is_empty() {
+            panic!("Player must have at least 1 song.");
+        }
+
         let (stream, handle) = rodio::OutputStream::try_default()?;
         let sink = Sink::try_new(&handle)?;
 
-        Ok(Player {
+        let mut player = Player {
+            next_song_blacklist_lookbehind_length: (5).min(songs.len() - 1),
             songs,
-            index: 0,
+            song_indices: Vec::new(),
+            song_indices_index: 0,
             
             _stream: stream,
             _handle: handle,
             sink,
 
             current_song_duration: Duration::ZERO,
-        })
+        };
+
+        player.push_new_song_index();
+
+        Ok(player)
+    }
+
+    fn push_new_song_index(&mut self) {
+        // All song indices
+        let mut indices = self.songs.iter().enumerate().map(|(index, _)| index).collect::<Vec<_>>();
+        // Remove song indices in recently played songs.
+        for lookbehind in 0..self.next_song_blacklist_lookbehind_length {
+            if let Some(blacklist_index) = self.song_indices.get_end(lookbehind) {
+                indices.retain(|&index| *blacklist_index != index)
+            }
+        }
+        let index = indices.choose(&mut thread_rng()).expect("Failed to get new song index.");
+        self.song_indices.push(*index);
     }
 
 
 
-    pub fn current_song(&self) -> Song { self.songs[self.index].clone() }
+    pub fn get_song_in_queue(&self, offset: isize) -> Option<Song> {
+        let indices_index = ((self.song_indices_index as isize) + offset) as usize;
+        if let Some(song_index) = self.song_indices.get(indices_index) {
+            Some(self.songs[*song_index].clone())
+        } else {
+            None
+        }
+    }
+    pub fn current_song(&self) -> Song { self.get_song_in_queue(0).expect("Song queue is empty or song indices index is out of bounds.") }
     pub fn current_song_duration(&self) -> Duration { self.current_song_duration }
     pub fn current_song_time(&self) -> Duration { unimplemented!() }
 
@@ -94,14 +144,18 @@ impl Player {
     }
 
     pub fn next_song(&mut self) {
-        self.index += 1;
-        self.index %= self.songs.len();
+        // FIXME: This skips the first song.
+        self.song_indices_index += 1;
+        if self.song_indices_index >= self.song_indices.len() {
+            self.push_new_song_index();
+        }
         self.load_song();
     }
 
     pub fn prev_song(&mut self) {
-        self.index -= 1;
-        if self.index >= self.songs.len() { self.index = 0; }
+        if self.song_indices_index > 0 {
+            self.song_indices_index -= 1;
+        }
         self.load_song();
     }
 
