@@ -1,7 +1,8 @@
 
-use std::{error::Error, fs, path::PathBuf};
+use std::{fs, path::PathBuf};
 use clap::{ArgGroup, Parser};
 use serde::Deserialize;
+use anyhow::Result;
 
 
 
@@ -18,6 +19,10 @@ struct ConfigParser {
     yt_playlist: Option<String>,
     #[arg(short, long)]
     skip_playlist_update: Option<bool>,
+    #[arg(short, long)]
+    volume: Option<f64>,
+    #[arg(short, long)]
+    loudness_normalization: Option<bool>,
 }
 
 impl ConfigParser {
@@ -27,6 +32,8 @@ impl ConfigParser {
             ffmpeg_path: a.ffmpeg_path.or(b.ffmpeg_path),
             yt_playlist: a.yt_playlist.or(b.yt_playlist),
             skip_playlist_update: a.skip_playlist_update.or(b.skip_playlist_update),
+            volume: a.volume.or(b.volume),
+            loudness_normalization: a.loudness_normalization.or(b.loudness_normalization),
         }
     }
 }
@@ -39,10 +46,12 @@ pub struct Config {
     pub ffmpeg_path: PathBuf,
     pub yt_playlist: String,
     pub skip_playlist_update: bool,
+    pub volume: f64,
+    pub loudness_normalization: bool,
 }
 
 impl Config {
-    pub fn load() -> Result<Config, Box<dyn Error>> {
+    pub fn load() -> Result<Config> {
         let mut partial_config = ConfigParser::parse();
 
         #[cfg(debug_assertions)]
@@ -59,6 +68,8 @@ impl Config {
             ffmpeg_path: partial_config.ffmpeg_path.expect("CLI or Config must have ffmpeg_path set"),
             yt_playlist: partial_config.yt_playlist.expect("CLI or Config must have yt_playlist set"),
             skip_playlist_update: partial_config.skip_playlist_update.unwrap_or(false),
+            volume: partial_config.volume.unwrap_or(0.5),
+            loudness_normalization: partial_config.loudness_normalization.unwrap_or(true),
         })
     }
 }

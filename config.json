@@ -1,7 +1,12 @@
 {
-    "_comment": "Config can be overridden by CLI arguments.",
+    "_comment_1": "Config can be overridden by CLI arguments.",
+    
     "yt_dlp_path": "**YT-DLP EXECUTABLE PATH**",
     "ffmpeg_path": "**FFMPEG EXECUTABLE PATH**",
     "yt_playlist": "**YOUTUBE PLAYLIST ID OR URL**",
-    "skip_playlist_update": false
+
+    "_comment_2": "The below are optional.",
+    "skip_playlist_update": false,
+    "volume": 0.5,
+    "loudness_normalization": true
 }

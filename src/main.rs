@@ -1,80 +1,126 @@
-
 // TODO: Hide console window, only if ran from explorer.exe
 // FIXME: Only auto hide in release mode
-// #![windows_subsystem = "windows"]
+#![windows_subsystem = "windows"]
 
 mod config;
-mod player;
+mod playlist;
+mod song;
 
-use std::{error::Error, ffi::c_void, fs, path::PathBuf, process::Command, sync::mpsc::{self, Receiver}, time::Duration};
 use config::Config;
-use player::{Player, Song};
+use playlist::Playlist;
+use song::Song;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use rodio::{OutputStream, OutputStreamHandle, Sink};
 use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, PlatformConfig};
-use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::{Window, WindowId}};
+use std::{ffi::c_void, fs, path::PathBuf, process::{Command, Stdio}, sync::mpsc::{self, Receiver}, time::Duration};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
+use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::{Window, WindowId}};
+use anyhow::{anyhow, Result};
 
 
 
 struct App {
+    config: Config,
     window: Option<Window>,
     tray_icon: Option<TrayIcon>,
     controls: Option<MediaControls>,
     controls_recv: Option<Receiver<MediaControlEvent>>,
-    player: Player,
+    _stream: (OutputStream, OutputStreamHandle),
+    sink: Sink,
+    playlist: Playlist,
 }
 
 impl App {
-    pub fn new(player: Player) -> App {
-        App {
+    pub fn new(config: Config, playlist: Playlist) -> Result<App> {
+        let (stream, handle) = rodio::OutputStream::try_default()?;
+        let sink = Sink::try_new(&handle)?;
+
+        sink.set_volume(config.volume as f32);
+
+        Ok(App {
+            config,
             window: None,
             tray_icon: None,
             controls: None,
             controls_recv: None,
-            player,
-        }
+            _stream: (stream, handle),
+            sink,
+            playlist,
+        })
     }
 
-    fn update_song(&mut self) -> Result<(), Box<dyn Error>> {
-        let song = self.player.current_song();
+    fn update_song(&mut self) -> Result<()> {
+        let song = self.playlist.seek(0).unwrap();
 
         println!("Playing: {}", song.name());
 
-        self.update_metadata(MediaMetadata {
-            title: Some(&song.name()),
-            ..MediaMetadata::default()
-        })?;
-
-        self.update_playback(souvlaki::MediaPlayback::Playing { progress: None })?;
+        if let Some(controls) = &mut self.controls {
+            controls.set_metadata(MediaMetadata {
+                title: Some(&song.name()),
+                ..MediaMetadata::default()
+            }).expect("Failed to set media metadata.");
+        }
 
         Ok(())
     }
 
-    fn update_playback(&mut self, playback: MediaPlayback) -> Result<(), Box<dyn Error>> {
-        if let Some(controls) = &mut self.controls {
-            controls.set_playback(playback).expect("Failed to set playback on media controls");
+    fn seek_song(&mut self, offset: isize) -> Result<()> {
+        let was_playing = !self.sink.is_paused();
+        self.sink.clear();
+        if let Some(song) = self.playlist.seek(offset) {
+            song.sink_load(&mut self.sink, self.config.loudness_normalization)?;
+            self.update_song()?;
+            if was_playing {
+                self.sink.play()
+            }
         }
         Ok(())
     }
 
-    fn update_metadata(&mut self, metadata: MediaMetadata) -> Result<(), Box<dyn Error>> {
+    fn update_playback(&mut self) -> Result<()> {
         if let Some(controls) = &mut self.controls {
-            controls.set_metadata(metadata).expect("Failed to set metadata on media controls"); 
+            if self.sink.empty() {
+                controls.set_playback(MediaPlayback::Stopped).expect("Failed to set playback on media controls");
+            } else if self.sink.is_paused() {
+                controls.set_playback(MediaPlayback::Paused { progress: None }).expect("Failed to set playback on media controls");
+            } else {
+                controls.set_playback(MediaPlayback::Playing { progress: None }).expect("Failed to set playback on media controls");
+            }
         }
         Ok(())
     }
 
+    fn is_playing(&self) -> bool {
+        !self.sink.is_paused() && !self.sink.empty()
+    }
 
+    fn play(&mut self) -> Result<()> {
+        self.sink.play();
+        self.update_playback()?;
+        Ok(())
+    }
 
-    fn create_window(event_loop: &ActiveEventLoop) -> Result<Window, Box<dyn Error>> {
+    fn pause(&mut self) -> Result<()> {
+        self.sink.pause();
+        self.update_playback()?;
+        Ok(())
+    }
+
+    fn stop(&mut self) -> Result<()> {
+        self.sink.stop();
+        self.update_playback()?;
+        Ok(())
+    }
+
+    fn create_window(event_loop: &ActiveEventLoop) -> Result<Window> {
         Ok(event_loop.create_window(
             Window::default_attributes()
                 .with_visible(false)
-                .with_title("yt-dlp-music-player")
+                .with_title("yt-dlp-music-player"),
         )?)
     }
 
-    fn create_tray_icon() -> Result<TrayIcon, Box<dyn Error>> {
+    fn create_tray_icon() -> Result<TrayIcon> {
         // TODO: Icon (Icon as current song image.)
         let icon = tray_icon::Icon::from_rgba(vec![255, 0, 255, 255], 1, 1)?;
         Ok(TrayIconBuilder::new()
@@ -85,28 +131,26 @@ impl App {
             .build()?)
     }
 
-    fn create_controls(window: &Window) -> Result<MediaControls, Box<dyn Error>> {
+    fn create_controls(window: &Window) -> Result<MediaControls> {
         #[cfg(not(target_os = "windows"))]
         let hwnd = None;
 
         #[cfg(target_os = "windows")]
         let hwnd = match window.window_handle()?.as_raw() {
             RawWindowHandle::Win32(h) => Some(h.hwnd.get() as *mut c_void),
-            _ => panic!("Could not get HWND"),
+            _ => return Err(anyhow!("Failed to get hwnd for window.")),
         };
 
         let controls = MediaControls::new(PlatformConfig {
             dbus_name: "org.vulae.YtDlpMusicPlayer",
             display_name: "yt-dlp-music-player",
-            hwnd: hwnd
-        }).expect("Failed to create media controls");
+            hwnd,
+        }).expect("Failed to get media controls.");
 
         Ok(controls)
     }
 
-
-
-    fn process_media_events(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Box<dyn Error>> {
+    fn process_media_events(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
         let mut events = Vec::new();
         if let Some(rx) = &self.controls_recv {
             for event in rx.try_iter() {
@@ -116,40 +160,25 @@ impl App {
 
         for event in events {
             match event {
-                MediaControlEvent::Play => {
-                    self.player.play();
-                    self.update_playback(MediaPlayback::Playing { progress: None })?;
-                },
-                MediaControlEvent::Pause => {
-                    self.player.pause();
-                    self.update_playback(MediaPlayback::Paused { progress: None })?;
-                },
+                MediaControlEvent::Play => self.play()?,
+                MediaControlEvent::Pause => self.pause()?,
                 MediaControlEvent::Toggle => {
-                    if !self.player.is_playing() {
-                        self.player.play();
-                        self.update_playback(MediaPlayback::Playing { progress: None })?;
+                    if self.is_playing() {
+                        self.pause()?
                     } else {
-                        self.player.pause();
-                        self.update_playback(MediaPlayback::Paused { progress: None })?;
+                        self.play()?
                     }
-                },
-                MediaControlEvent::Next => {
-                    self.player.next_song();
-                    self.update_song()?;
-                    self.player.play();
-                },
-                MediaControlEvent::Previous => {
-                    self.player.prev_song();
-                    self.update_song()?;
-                    self.player.play();
-                },
-                MediaControlEvent::Stop => {
-                    self.player.stop();
-                    self.update_playback(MediaPlayback::Stopped)?;
-                },
+                }
+                MediaControlEvent::Next => self.seek_song(1)?,
+                MediaControlEvent::Previous => self.seek_song(-1)?,
+                MediaControlEvent::Stop => self.stop()?,
                 MediaControlEvent::Seek(direction) => println!("Seek: {:#?}", direction),
-                MediaControlEvent::SeekBy(direction, duration) => println!("Seek By: {:#?} {:#?}", direction, duration),
-                MediaControlEvent::SetPosition(position) => println!("Set Position: {:#?}", position),
+                MediaControlEvent::SeekBy(direction, duration) => {
+                    println!("Seek By: {:#?} {:#?}", direction, duration)
+                }
+                MediaControlEvent::SetPosition(position) => {
+                    println!("Set Position: {:#?}", position)
+                }
                 MediaControlEvent::SetVolume(volume) => println!("Set Volume: {}", volume),
                 MediaControlEvent::OpenUri(uri) => println!("Open URI: {}", uri),
                 MediaControlEvent::Raise => println!("Raise"),
@@ -160,44 +189,18 @@ impl App {
         Ok(())
     }
 
-    fn process_tray_icon_events(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Box<dyn Error>> {
+    fn process_tray_icon_events(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
         while let Ok(event) = TrayIconEvent::receiver().try_recv() {
-            match event {
-                TrayIconEvent::Click {
-                    id: _,
-                    position: _,
-                    rect: _,
-                    button: tray_icon::MouseButton::Left,
-                    button_state: tray_icon::MouseButtonState::Down
-                } => {
-                    self.player.next_song();
-                    self.update_song()?;
-                    self.player.play();
-                },
-                TrayIconEvent::Click {
-                    id: _,
-                    position: _,
-                    rect: _,
-                    button: tray_icon::MouseButton::Right,
-                    button_state: tray_icon::MouseButtonState::Down
-                } => {
-                    self.player.prev_song();
-                    self.update_song()?;
-                    self.player.play();
-                },
-                TrayIconEvent::Click {
-                    id: _,
-                    position: _,
-                    rect: _,
-                    button: tray_icon::MouseButton::Middle,
-                    button_state: tray_icon::MouseButtonState::Down
-                } => event_loop.exit(),
-                _ => { },
+            if let TrayIconEvent::Click { button, button_state: tray_icon::MouseButtonState::Down, id: _, position: _, rect: _ } = event {
+                match button {
+                    tray_icon::MouseButton::Left => self.seek_song(1)?,
+                    tray_icon::MouseButton::Right => self.seek_song(-1)?,
+                    tray_icon::MouseButton::Middle => event_loop.exit(),
+                }
             }
         }
         Ok(())
     }
-
 }
 
 impl ApplicationHandler for App {
@@ -205,18 +208,19 @@ impl ApplicationHandler for App {
         let window = App::create_window(event_loop).unwrap();
         let tray_icon = App::create_tray_icon().unwrap();
         let mut controls = App::create_controls(&window).unwrap();
-        
+
         let (tx, rx) = mpsc::sync_channel(32);
-        controls.attach(move |e| tx.send(e).unwrap()).expect("Failed to attach to media controls");
+        controls
+            .attach(move |e| tx.send(e).unwrap())
+            .expect("Failed to attach to media controls");
 
         self.window = Some(window);
         self.tray_icon = Some(tray_icon);
         self.controls = Some(controls);
         self.controls_recv = Some(rx);
 
-        // FIXME: For some reason this skips first song.
-        self.update_song().unwrap();
-        self.player.play();
+        self.seek_song(0).unwrap();
+        self.play().unwrap();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -232,58 +236,71 @@ impl ApplicationHandler for App {
                 self.process_media_events(&event_loop).unwrap();
                 self.process_tray_icon_events(&event_loop).unwrap();
 
-                if self.player.is_finished() {
-                    self.player.next_song();
-                    self.update_song().unwrap();
-                    self.player.play();
+                if !self.sink.is_paused() && self.sink.empty() {
+                    self.seek_song(1).unwrap();
+                    self.sink.play();
                 }
 
                 std::thread::sleep(Duration::from_millis(100));
-            },
+            }
             winit::event::StartCause::Init => event_loop.set_control_flow(ControlFlow::Poll),
-            _ => { },
+            _ => {}
         }
     }
 }
 
-
-
-fn update_playlist(playlist_archive_directory: &PathBuf, yt_dlp_path: &PathBuf, ffmpeg_path: &PathBuf, url: &url::Url) -> Result<(), Box<dyn Error>> {
+fn update_playlist(playlist_archive_directory: &PathBuf, yt_dlp_path: &PathBuf, ffmpeg_path: &PathBuf, url: &url::Url) -> Result<()> {
     // Update playlist archive directory with yt-dlp
     println!("Updating playlist archive. . .");
     let mut playlist_archive_file = playlist_archive_directory.clone();
     playlist_archive_file.push("archive.txt");
-    Command::new(yt_dlp_path)
+
+    let mut cmd = Command::new(yt_dlp_path)
         // .arg("-f").arg("bestaudio")
         .arg("--ffmpeg-location").arg(ffmpeg_path)
-        .arg("-x").arg("--audio-format").arg("m4a")
+        .arg("-x")
+        .arg("--audio-format").arg("m4a") // TODO: What is the best sounding audio format for tiniest file size?
         .arg("--paths").arg(playlist_archive_directory)
+        // Loudness normalization.
+        // NOTE: this is disable and instead implemented in song::Song due to being unable to reliably normalize the loudness.
+        // .arg("--postprocessor-args").arg("ffmpeg:-af volume=0dB")
+        .arg("-o").arg("%(id)s %(title)s.%(ext)s")
         .arg("--download-archive").arg(&playlist_archive_file)
         .arg("--write-thumbnail")
         .arg(url.to_string())
         // .arg("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-        .output()?;
+        .stdout(Stdio::inherit()) // TODO: Is this fine to do?
+        .spawn()?;
+
+    cmd.wait()?;
+
     println!("Done updating playlist archive.");
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<()> {
     let config = Config::load()?;
 
     // Get playlist ID
     let playlist_id: String = match url::Url::parse(&config.yt_playlist) {
-        Ok(url) => if let Some(playlist_id) = url.query_pairs().find_map(|(name, value)| {
-            if name == "list" {
-                Some(value)
+        Ok(url) => {
+            if let Some(playlist_id) =
+                url.query_pairs().find_map(
+                    |(name, value)| {
+                        if name == "list" {
+                            Some(value)
+                        } else {
+                            None
+                        }
+                    },
+                )
+            {
+                playlist_id.to_string()
             } else {
-                None
+                panic!("Invalid URL.");
             }
-        }) {
-            playlist_id.to_string()
-        } else {
-            panic!("Invalid URL.");
-        },
-        Err(_) => config.yt_playlist.clone()
+        }
+        Err(_) => config.yt_playlist.clone(),
     };
     println!("Playlist ID: {}", &playlist_id);
 
@@ -294,16 +311,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Playlist archive: {:#?}", &playlist_directory);
 
     if !config.skip_playlist_update {
-        update_playlist(&playlist_directory, &config.yt_dlp_path, &config.ffmpeg_path, &url::Url::parse(&format!("https://www.youtube.com/playlist?list={}", &playlist_id))?)?;
+        update_playlist(
+            &playlist_directory,
+            &config.yt_dlp_path,
+            &config.ffmpeg_path,
+            &url::Url::parse(&format!(
+                "https://www.youtube.com/playlist?list={}",
+                &playlist_id
+            ))?,
+        )?;
     }
 
     let songs = Song::load_playlist_directory(&playlist_directory)?;
-    let mut player = Player::new(songs)?;
-
-    player.set_volume(0.25);
+    let playlist = Playlist::new(songs);
 
     let event_loop = EventLoop::new()?;
-    let mut app = App::new(player);
+    let mut app = App::new(config, playlist)?;
     event_loop.run_app(&mut app)?;
 
     Ok(())
