@@ -1,0 +1,18 @@
+# You may override any of these with CLI arguments.
+
+[program-paths]
+# yt-dlp.exe path. https://github.com/yt-dlp/yt-dlp
+yt-dlp-path = ""
+# ffmpeg.exe path. https://ffmpeg.org/
+ffmpeg-path = ""
+
+[config]
+# YouTube playlist ID or URL.
+yt-playlist = ""
+# Skips the download of newly added videos in the YouTube playlist.
+skip-playlist-update = false
+volume = 0.5
+# If to normalize loudness.
+# This feature is demanding in development environments,
+# but pretty much unnoticable in release builds.
+loudness-normalization = true

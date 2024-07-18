@@ -11,7 +11,7 @@ Requires [yt-dlp](https://github.com/yt-dlp/yt-dlp) & [ffmpeg](https://ffmpeg.or
 
 > ⚠ **This is only tested for windows, but may have a very slim chance of actually working on other platforms.**
 
-Set config `config.json` then run `yt-dlp-music-player.exe`
+Set config `config.toml` then run `yt-dlp-music-player.exe`
 
 (Or use CLI arguments without a config.)
 
