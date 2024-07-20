@@ -5,9 +5,10 @@
 mod config;
 mod playlist;
 mod song;
+mod loudness_normalization;
 
 use config::Config;
-use playlist::Playlist;
+use playlist::{Playlist, PlaylistSeekable};
 use song::Song;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use rodio::{OutputStream, OutputStreamHandle, Sink};

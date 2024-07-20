@@ -12,7 +12,8 @@ yt-playlist = ""
 # Skips the download of newly added videos in the YouTube playlist.
 skip-playlist-update = false
 volume = 0.5
-# If to normalize loudness.
+# Loudness normalization.
 # This feature is demanding in development environments,
 # but pretty much unnoticable in release builds.
-loudness-normalization = true
+# (Possible values: None, RMS, EbuR128)
+loudness-normalization = "RMS"

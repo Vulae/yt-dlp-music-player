@@ -2,9 +2,29 @@
 // TODO: Refactor all of this, it's pretty ugly, I hope you don't look. . . ◑﹏◐
 
 use std::{fs, path::PathBuf};
-use clap::{ArgGroup, Parser};
+use clap::{ArgGroup, Parser, ValueEnum};
 use serde::Deserialize;
 use anyhow::Result;
+use crate::loudness_normalization::LoudnessNormalization;
+
+
+
+#[derive(Deserialize, Clone, Copy, Debug)]
+enum TomlConfigParserConfigLoudnessNormalization {
+    None,
+    RMS,
+    EbuR128,
+}
+
+impl TomlConfigParserConfigLoudnessNormalization {
+    fn to_final(&self) -> LoudnessNormalization {
+        match self {
+            TomlConfigParserConfigLoudnessNormalization::None => LoudnessNormalization::None,
+            TomlConfigParserConfigLoudnessNormalization::RMS => LoudnessNormalization::RMS,
+            TomlConfigParserConfigLoudnessNormalization::EbuR128 => LoudnessNormalization::EbuR128,
+        }
+    }
+}
 
 
 
@@ -25,7 +45,7 @@ struct TomlConfigParserConfig {
     skip_playlist_update: Option<bool>,
     volume: Option<f64>,
     #[serde(rename="loudness-normalization")]
-    loudness_normalization: Option<bool>,
+    loudness_normalization: Option<TomlConfigParserConfigLoudnessNormalization>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -36,6 +56,23 @@ struct TomlConfigParser {
 }
 
 
+
+#[derive(ValueEnum, Clone, Copy, Debug)]
+enum CliConfigParserLoudnessNormalization {
+    None,
+    RMS,
+    EbuR128,
+}
+
+impl CliConfigParserLoudnessNormalization {
+    fn to_final(&self) -> LoudnessNormalization {
+        match self {
+            CliConfigParserLoudnessNormalization::None => LoudnessNormalization::None,
+            CliConfigParserLoudnessNormalization::RMS => LoudnessNormalization::RMS,
+            CliConfigParserLoudnessNormalization::EbuR128 => LoudnessNormalization::EbuR128,
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -53,7 +90,7 @@ struct CliConfigParser {
     #[arg(short, long)]
     volume: Option<f64>,
     #[arg(short, long)]
-    loudness_normalization: Option<bool>,
+    loudness_normalization: Option<CliConfigParserLoudnessNormalization>,
 }
 
 
@@ -65,7 +102,7 @@ struct PartialConfig {
     yt_playlist: Option<String>,
     skip_playlist_update: Option<bool>,
     volume: Option<f64>,
-    loudness_normalization: Option<bool>,
+    loudness_normalization: Option<LoudnessNormalization>,
 }
 
 impl PartialConfig {
@@ -99,7 +136,7 @@ impl PartialConfig {
             yt_playlist: config.config.as_ref().and_then(|c| c.yt_playlist.clone()),
             skip_playlist_update: config.config.as_ref().and_then(|c| c.skip_playlist_update.clone()),
             volume: config.config.as_ref().and_then(|c| c.volume.clone()),
-            loudness_normalization: config.config.as_ref().and_then(|c| c.loudness_normalization.clone()),
+            loudness_normalization: config.config.as_ref().and_then(|c| c.loudness_normalization.map(|l| l.to_final())),
         })
     }
 
@@ -111,7 +148,7 @@ impl PartialConfig {
             yt_playlist: config.yt_playlist,
             skip_playlist_update: config.skip_playlist_update,
             volume: config.volume,
-            loudness_normalization: config.loudness_normalization,
+            loudness_normalization: config.loudness_normalization.map(|l| l.to_final()),
         }
     }
 }
@@ -125,7 +162,7 @@ pub struct Config {
     pub yt_playlist: String,
     pub skip_playlist_update: bool,
     pub volume: f64,
-    pub loudness_normalization: bool,
+    pub loudness_normalization: LoudnessNormalization,
 }
 
 impl Config {
@@ -146,7 +183,7 @@ impl Config {
             yt_playlist: config.yt_playlist.expect("CLI or Config must have yt_playlist set"),
             skip_playlist_update: config.skip_playlist_update.unwrap_or(false),
             volume: config.volume.unwrap_or(0.5),
-            loudness_normalization: config.loudness_normalization.unwrap_or(true),
+            loudness_normalization: config.loudness_normalization.unwrap_or(LoudnessNormalization::RMS),
         })
     }
 }

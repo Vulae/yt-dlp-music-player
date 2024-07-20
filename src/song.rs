@@ -2,48 +2,7 @@
 use std::{fs, io::{BufReader, Cursor}, path::PathBuf, time::Duration};
 use anyhow::{anyhow, Result};
 use rodio::{Sink, Source};
-
-
-
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
-enum LoudnessNormalization {
-    None,
-    RMS,
-    // TODO: EBU R128 loudness normalization procedure
-}
-
-const LOUDNESS_TARGET: f64 = 1.0;
-
-impl LoudnessNormalization {
-    /// This may or may not consume the source, so you may have to either clone the source, or seek back to wherever the source was at.
-    /// This will start where the source is currently at. So all previous samples in source are ignored.
-    pub fn get_normal_amplification<S: Source<Item = i16>>(&self, source: &mut S) -> f64 {
-        match self {
-            LoudnessNormalization::None => LOUDNESS_TARGET,
-            LoudnessNormalization::RMS => {
-                let mut suq: i64 = 0;
-                let mut num_samples: u64 = 0;
-
-                // The loading of samples is what takes the majority of the time.
-                // But this all should be somewhat unnoticeable with a release build.
-                while let Some(sample) = source.next() {
-                    let sample = sample as i64;
-                    suq += sample * sample;
-                    num_samples += 1;
-                }
-
-                if num_samples == 0 { return 1.0 }
-
-                let rms = ((suq as f64) / (num_samples as f64)).sqrt();
-
-                let gain = ((LOUDNESS_TARGET / rms) / (source.channels() as f64)) * 10000.0; // ???
-
-                gain
-            },
-        }
-    }
-}
+use crate::loudness_normalization::LoudnessNormalization;
 
 
 
@@ -72,7 +31,7 @@ impl Song {
         Ok(songs)
     }
 
-    pub fn sink_load(&self, sink: &mut Sink, loudness_normalization: bool) -> Result<Duration> {
+    pub fn sink_load(&self, sink: &mut Sink, loudness_normalization: LoudnessNormalization) -> Result<Duration> {
         
         // Loading the whole file to prevent stuttering.
         // Pretty sure this *should* be fine as audio data shouldn't really be > 50MiB.
@@ -86,14 +45,10 @@ impl Song {
             return Err(anyhow!("Failed to get song duration."));
         };
 
-        if loudness_normalization {
-            let amplify_amount = LoudnessNormalization::RMS.get_normal_amplification(&mut source);
-            source.try_seek(Duration::ZERO).unwrap(); // FIXME: ? instead of .unwrap()
-            let normalized_source = source.amplify(amplify_amount as f32);
-            sink.append(normalized_source);
-        } else {
-            sink.append(source);
-        }
+        let amplify_amount = loudness_normalization.get_normal_amplification(&mut source);
+        source.try_seek(Duration::ZERO).unwrap(); // FIXME: ? instead of .unwrap()
+        let normalized_source = source.amplify(amplify_amount as f32);
+        sink.append(normalized_source);
 
         Ok(duration)
     }
