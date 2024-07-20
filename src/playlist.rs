@@ -1,5 +1,6 @@
 
-use rand::Rng;
+use std::ops::Div;
+use rand::prelude::IteratorRandom;
 use crate::song::Song;
 
 
@@ -23,13 +24,14 @@ pub trait PlaylistSeekable {
 
 
 
-
-
 #[allow(dead_code)]
 #[derive(Debug)]
 enum PlaylistShuffle {
     Normal,
     Random,
+    SmartRandom {
+        blacklist_length: usize,
+    },
 }
 
 
@@ -45,7 +47,9 @@ pub struct Playlist {
 impl Playlist {
     pub fn new(songs: Vec<Song>) -> Playlist {
         Playlist {
-            mode: PlaylistShuffle::Random,
+            mode: PlaylistShuffle::SmartRandom {
+                blacklist_length: if songs.len() > 10 { songs.len().div(2) } else { songs.len().saturating_sub(3) }
+            },
             songs,
             song_indices: Vec::new(),
             song_indices_index: 0,
@@ -62,7 +66,13 @@ impl Playlist {
                 }
             },
             PlaylistShuffle::Random => {
-                rand::thread_rng().gen_range(0..self.songs.len())
+                self.songs.iter().enumerate().map(|(i, _)| i).choose(&mut rand::thread_rng()).unwrap()
+            },
+            PlaylistShuffle::SmartRandom { blacklist_length } => {
+                let song_indices: Vec<usize> = self.songs.iter().enumerate().map(|(i, _)| i).collect::<Vec<_>>();
+                let blacklisted_songs = &self.song_indices[self.song_indices.len().saturating_sub(blacklist_length)..self.song_indices.len()];
+                let allowed_song_indices = song_indices.into_iter().filter(|i| blacklisted_songs.iter().all(|b| i != b)).collect::<Vec<_>>();
+                allowed_song_indices.into_iter().choose(&mut rand::thread_rng()).unwrap()
             },
         }
     }
