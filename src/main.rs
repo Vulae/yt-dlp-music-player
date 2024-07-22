@@ -2,18 +2,21 @@
 // FIXME: Only auto hide in release mode
 #![windows_subsystem = "windows"]
 
+#![allow(dead_code)]
+
 mod config;
 mod playlist;
 mod song;
 mod loudness_normalization;
+mod media_controls;
 
 use config::Config;
+use media_controls::{create_media_controls_multi_os, MediaControls, CreateMediaControlsMultiOSOptions, MediaControlsMetadata, MediaControlsPlayback};
 use playlist::{Playlist, PlaylistSeekable};
 use song::Song;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use rodio::{OutputStream, OutputStreamHandle, Sink};
-use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, PlatformConfig};
-use std::{ffi::c_void, fs, path::PathBuf, process::{Command, Stdio}, sync::mpsc::{self, Receiver}, time::Duration};
+use std::{ffi::c_void, fs, path::PathBuf, process::{Command, Stdio}, time::Duration};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::{Window, WindowId}};
 use anyhow::{anyhow, Result};
@@ -25,7 +28,6 @@ struct App {
     window: Option<Window>,
     tray_icon: Option<TrayIcon>,
     controls: Option<MediaControls>,
-    controls_recv: Option<Receiver<MediaControlEvent>>,
     _stream: (OutputStream, OutputStreamHandle),
     sink: Sink,
     playlist: Playlist,
@@ -43,7 +45,6 @@ impl App {
             window: None,
             tray_icon: None,
             controls: None,
-            controls_recv: None,
             _stream: (stream, handle),
             sink,
             playlist,
@@ -56,10 +57,10 @@ impl App {
         println!("Playing: {}", song.name());
 
         if let Some(controls) = &mut self.controls {
-            controls.set_metadata(MediaMetadata {
-                title: Some(&song.name()),
-                ..MediaMetadata::default()
-            }).expect("Failed to set media metadata.");
+            controls.set_metadata(MediaControlsMetadata {
+                title: Some(song.name()),
+                ..MediaControlsMetadata::default()
+            })?;
         }
 
         Ok(())
@@ -81,11 +82,11 @@ impl App {
     fn update_playback(&mut self) -> Result<()> {
         if let Some(controls) = &mut self.controls {
             if self.sink.empty() {
-                controls.set_playback(MediaPlayback::Stopped).expect("Failed to set playback on media controls");
+                controls.set_playback(MediaControlsPlayback::Stopped)?;
             } else if self.sink.is_paused() {
-                controls.set_playback(MediaPlayback::Paused { progress: None }).expect("Failed to set playback on media controls");
+                controls.set_playback(MediaControlsPlayback::Paused(None))?;
             } else {
-                controls.set_playback(MediaPlayback::Playing { progress: None }).expect("Failed to set playback on media controls");
+                controls.set_playback(MediaControlsPlayback::Playing(None))?;
             }
         }
         Ok(())
@@ -142,48 +143,23 @@ impl App {
             _ => return Err(anyhow!("Failed to get hwnd for window.")),
         };
 
-        let controls = MediaControls::new(PlatformConfig {
-            dbus_name: "org.vulae.YtDlpMusicPlayer",
-            display_name: "yt-dlp-music-player",
+        let controls = create_media_controls_multi_os(CreateMediaControlsMultiOSOptions {
             hwnd,
-        }).expect("Failed to get media controls.");
+        })?;
 
         Ok(controls)
     }
 
-    fn process_media_events(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
-        let mut events = Vec::new();
-        if let Some(rx) = &self.controls_recv {
-            for event in rx.try_iter() {
-                events.push(event);
-            }
-        }
-
-        for event in events {
-            match event {
-                MediaControlEvent::Play => self.play()?,
-                MediaControlEvent::Pause => self.pause()?,
-                MediaControlEvent::Toggle => {
-                    if self.is_playing() {
-                        self.pause()?
-                    } else {
-                        self.play()?
-                    }
+    fn process_media_events(&mut self, _event_loop: &ActiveEventLoop) -> Result<()> {
+        if self.controls.is_some() {
+            while let Some(event) = self.controls.as_mut().unwrap().next_event() {
+                match event {
+                    media_controls::MediaControlsEvent::Play => self.play()?,
+                    media_controls::MediaControlsEvent::Pause => self.pause()?,
+                    media_controls::MediaControlsEvent::Stop => self.stop()?,
+                    media_controls::MediaControlsEvent::Next => self.seek_song(1)?,
+                    media_controls::MediaControlsEvent::Previous => self.seek_song(-1)?,
                 }
-                MediaControlEvent::Next => self.seek_song(1)?,
-                MediaControlEvent::Previous => self.seek_song(-1)?,
-                MediaControlEvent::Stop => self.stop()?,
-                MediaControlEvent::Seek(direction) => println!("Seek: {:#?}", direction),
-                MediaControlEvent::SeekBy(direction, duration) => {
-                    println!("Seek By: {:#?} {:#?}", direction, duration)
-                }
-                MediaControlEvent::SetPosition(position) => {
-                    println!("Set Position: {:#?}", position)
-                }
-                MediaControlEvent::SetVolume(volume) => println!("Set Volume: {}", volume),
-                MediaControlEvent::OpenUri(uri) => println!("Open URI: {}", uri),
-                MediaControlEvent::Raise => println!("Raise"),
-                MediaControlEvent::Quit => event_loop.exit(),
             }
         }
 
@@ -208,17 +184,11 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window = App::create_window(event_loop).unwrap();
         let tray_icon = App::create_tray_icon().unwrap();
-        let mut controls = App::create_controls(&window).unwrap();
-
-        let (tx, rx) = mpsc::sync_channel(32);
-        controls
-            .attach(move |e| tx.send(e).unwrap())
-            .expect("Failed to attach to media controls");
+        let controls = App::create_controls(&window).unwrap();
 
         self.window = Some(window);
         self.tray_icon = Some(tray_icon);
         self.controls = Some(controls);
-        self.controls_recv = Some(rx);
 
         self.seek_song(0).unwrap();
         self.play().unwrap();

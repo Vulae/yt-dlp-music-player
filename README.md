@@ -9,7 +9,7 @@ Requires [yt-dlp](https://github.com/yt-dlp/yt-dlp) & [ffmpeg](https://ffmpeg.or
 
 > ⚠ **Usage will probably change a lot in the near future.**
 
-> ⚠ **This is only tested for windows, but may have a very slim chance of actually working on other platforms.**
+> ⚠ **This only works for Windows, but other OS may be supported in the future.**
 
 Set config `config.toml` then run `yt-dlp-music-player.exe`
 

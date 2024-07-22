@@ -13,8 +13,8 @@ raw-window-handle = "0.6.2"
 rodio = { version = "0.19.0", default-features = false, features = ["symphonia-aac", "symphonia-isomp4"] }
 serde = { version = "1.0.204", features = ["derive"] }
 serde_flat_path = { version = "0.2.0", features = ["allow_overlap"] }
-souvlaki = "0.7.3"
 toml = "0.8.14"
 tray-icon = "0.14.3"
 url = "2.5.0"
+windows = { version = "0.58.0", features = ["Foundation", "Media", "Win32_Foundation", "Win32_System_WinRT", "Storage_Streams"] }
 winit = "0.30.1"
