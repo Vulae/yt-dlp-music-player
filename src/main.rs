@@ -1,6 +1,3 @@
-// TODO: Hide console window, only if ran from explorer.exe
-// FIXME: Only auto hide in release mode
-#![windows_subsystem = "windows"]
 
 #![allow(dead_code)]
 
@@ -190,8 +187,14 @@ impl ApplicationHandler for App {
         self.tray_icon = Some(tray_icon);
         self.controls = Some(controls);
 
+        if self.config.start_paused {
+            self.pause().unwrap();
+        }
         self.seek_song(0).unwrap();
-        self.play().unwrap();
+
+        if self.config.hide_console {
+            hide_console().unwrap();
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -219,6 +222,10 @@ impl ApplicationHandler for App {
         }
     }
 }
+
+
+
+
 
 fn update_playlist(playlist_archive_directory: &PathBuf, yt_dlp_path: &PathBuf, ffmpeg_path: &PathBuf, url: &url::Url) -> Result<()> {
     // Update playlist archive directory with yt-dlp
@@ -248,6 +255,19 @@ fn update_playlist(playlist_archive_directory: &PathBuf, yt_dlp_path: &PathBuf, 
     println!("Done updating playlist archive.");
     Ok(())
 }
+
+
+
+fn hide_console() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        // TODO: What is done when this is ran twice?
+        windows::Win32::System::Console::FreeConsole()?;
+    }
+    Ok(())
+}
+
+
 
 fn main() -> Result<()> {
     let config = Config::load()?;

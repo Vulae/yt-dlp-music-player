@@ -17,3 +17,7 @@ volume = 0.5
 # but pretty much unnoticable in release builds.
 # (Possible values: None, RMS, EbuR128)
 loudness-normalization = "RMS"
+# Useful for debugging or as startup program.
+start-paused = false
+# Development and debugging
+hide-console = true

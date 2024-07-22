@@ -46,6 +46,10 @@ struct TomlConfigParserConfig {
     volume: Option<f64>,
     #[serde(rename="loudness-normalization")]
     loudness_normalization: Option<TomlConfigParserConfigLoudnessNormalization>,
+    #[serde(rename="start-paused")]
+    start_paused: Option<bool>,
+    #[serde(rename="hide-console")]
+    hide_console: Option<bool>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -91,11 +95,15 @@ struct CliConfigParser {
     volume: Option<f64>,
     #[arg(short, long)]
     loudness_normalization: Option<CliConfigParserLoudnessNormalization>,
+    #[arg(short='a', long)]
+    start_paused: Option<bool>,
+    #[arg(short='c', long)]
+    hide_console: Option<bool>,
 }
 
 
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct PartialConfig {
     yt_dlp_path: Option<PathBuf>,
     ffmpeg_path: Option<PathBuf>,
@@ -103,18 +111,13 @@ struct PartialConfig {
     skip_playlist_update: Option<bool>,
     volume: Option<f64>,
     loudness_normalization: Option<LoudnessNormalization>,
+    start_paused: Option<bool>,
+    hide_console: Option<bool>,
 }
 
 impl PartialConfig {
     pub fn empty() -> PartialConfig {
-        PartialConfig {
-            yt_dlp_path: None,
-            ffmpeg_path: None,
-            yt_playlist: None,
-            skip_playlist_update: None,
-            volume: None,
-            loudness_normalization: None,
-        }
+        PartialConfig::default()
     }
 
     pub fn merge(a: PartialConfig, b: PartialConfig) -> PartialConfig {
@@ -125,6 +128,8 @@ impl PartialConfig {
             skip_playlist_update: a.skip_playlist_update.or(b.skip_playlist_update),
             volume: a.volume.or(b.volume),
             loudness_normalization: a.loudness_normalization.or(b.loudness_normalization),
+            start_paused: a.start_paused.or(b.start_paused),
+            hide_console: a.hide_console.or(b.hide_console),
         }
     }
 
@@ -137,6 +142,8 @@ impl PartialConfig {
             skip_playlist_update: config.config.as_ref().and_then(|c| c.skip_playlist_update.clone()),
             volume: config.config.as_ref().and_then(|c| c.volume.clone()),
             loudness_normalization: config.config.as_ref().and_then(|c| c.loudness_normalization.map(|l| l.to_final())),
+            start_paused: config.config.as_ref().and_then(|c| c.start_paused),
+            hide_console: config.config.as_ref().and_then(|c| c.hide_console),
         })
     }
 
@@ -149,6 +156,8 @@ impl PartialConfig {
             skip_playlist_update: config.skip_playlist_update,
             volume: config.volume,
             loudness_normalization: config.loudness_normalization.map(|l| l.to_final()),
+            start_paused: config.start_paused,
+            hide_console: config.hide_console
         }
     }
 }
@@ -163,6 +172,8 @@ pub struct Config {
     pub skip_playlist_update: bool,
     pub volume: f64,
     pub loudness_normalization: LoudnessNormalization,
+    pub start_paused: bool,
+    pub hide_console: bool,
 }
 
 impl Config {
@@ -184,6 +195,8 @@ impl Config {
             skip_playlist_update: config.skip_playlist_update.unwrap_or(false),
             volume: config.volume.unwrap_or(0.5),
             loudness_normalization: config.loudness_normalization.unwrap_or(LoudnessNormalization::RMS),
+            start_paused: config.start_paused.unwrap_or(false),
+            hide_console: config.hide_console.unwrap_or(true),
         })
     }
 }
