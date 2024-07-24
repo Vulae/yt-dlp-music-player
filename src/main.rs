@@ -11,7 +11,6 @@ use config::Config;
 use media_controls::{create_media_controls_multi_os, CreateMediaControlsMultiOSOptions, MediaControls, MediaControlsEvent, MediaControlsMetadata, MediaControlsPlayback};
 use playlist::{Playlist, PlaylistSeekable};
 use song::Song;
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use rodio::{OutputStream, OutputStreamHandle, Sink};
 use std::{ffi::c_void, fs, path::PathBuf, process::{Command, Stdio}, time::Duration};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -142,14 +141,17 @@ impl App {
     }
 
     fn create_controls(window: &Window) -> Result<MediaControls> {
-        #[cfg(not(target_os = "windows"))]
-        let hwnd = None;
+        #[allow(unused_assignments, unused_mut)]
+        let mut hwnd: Option<*mut c_void> = None;
 
         #[cfg(target_os = "windows")]
-        let hwnd = match window.window_handle()?.as_raw() {
-            RawWindowHandle::Win32(h) => Some(h.hwnd.get() as *mut c_void),
-            _ => return Err(anyhow!("Failed to get hwnd for window.")),
-        };
+        {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            hwnd = match window.window_handle()?.as_raw() {
+                RawWindowHandle::Win32(h) => Some(h.hwnd.get() as *mut c_void),
+                _ => return Err(anyhow!("Failed to get hwnd for window.")),
+            };
+        }
 
         let controls = create_media_controls_multi_os(CreateMediaControlsMultiOSOptions {
             hwnd,
