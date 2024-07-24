@@ -22,10 +22,18 @@ use anyhow::{anyhow, Result};
 pub enum MediaControlsEvent {
     Play,
     Pause,
+    TogglePlayPause,
     Stop,
 
     Next,
     Previous,
+
+    VolumeToggleMute,
+    VolumeMute,
+    VolumeUnmute,
+    SetVolume(f32),
+    VolumeDown,
+    VolumeUp,
 }
 
 #[derive(Debug, Clone)]

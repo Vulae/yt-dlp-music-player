@@ -1,19 +1,96 @@
 
 // A lot of code taken from: https://github.com/Sinono3/souvlaki/blob/master/src/platform/windows/mod.rs
 
-use std::{ffi::c_void, sync::{Arc, Mutex}};
-use windows::{core::HSTRING, Foundation::{EventRegistrationToken, TimeSpan, TypedEventHandler, Uri}, Media::{MediaPlaybackStatus, MediaPlaybackType, SystemMediaTransportControls, SystemMediaTransportControlsButton, SystemMediaTransportControlsButtonPressedEventArgs, SystemMediaTransportControlsDisplayUpdater, SystemMediaTransportControlsTimelineProperties}, Storage::Streams::RandomAccessStreamReference, Win32::{Foundation::HWND, System::WinRT::ISystemMediaTransportControlsInterop}};
+use std::{ffi::c_void, sync::{Arc, Mutex}, thread};
+use windows::{core::HSTRING, Foundation::{EventRegistrationToken, TimeSpan, TypedEventHandler, Uri}, Media::{Control::GlobalSystemMediaTransportControlsSessionManager, MediaPlaybackStatus, MediaPlaybackType, SystemMediaTransportControls, SystemMediaTransportControlsButton, SystemMediaTransportControlsButtonPressedEventArgs, SystemMediaTransportControlsDisplayUpdater, SystemMediaTransportControlsTimelineProperties}, Storage::Streams::RandomAccessStreamReference, Win32::{Foundation::{HWND, LPARAM, LRESULT, WPARAM}, System::{LibraryLoader::GetModuleHandleW, WinRT::ISystemMediaTransportControlsInterop}, UI::WindowsAndMessaging::{CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN}}};
 use anyhow::Result;
 use super::{MediaControlsEvent, MediaControlsMetadata, MediaControlsPlayback};
 
 /*
-    Seems like volume controls do not work *well* on windows.
-
-    The only way I could see of volume controls working is by
-    hijacking key events and if its a media volume control event,
-    check if the current selected media item is for this MediaControls
-    and if it is, then change the HWND volume.
+    Media volume controls *REALLY* suck on Windows.
+    This is the only way I could figure out on how to implement them.
+    By listening for volume media events, and then hijacking the events if the current media item is yt-dlp-music-player.
 */
+
+// TODO: Refactor, Allow for multiple listeners.
+// This also doesn't property clean up once media controls are dropped.
+// I just sorta made this fast because I actually have 0 clue on how to properly implement this.
+// Also this is very jank, when toggling mute if theres other media playing, it may just break.
+
+static mut EVENT_QUEUES: Vec<Arc<Mutex<Vec<MediaControlsEvent>>>> = vec![];
+
+unsafe extern "system" fn hook_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
+    
+    let mut media_event: Option<MediaControlsEvent> = None;
+
+    if n_code == (HC_ACTION as i32) {
+        let kb_struct: &KBDLLHOOKSTRUCT = &*(l_param.0 as *const KBDLLHOOKSTRUCT);
+        match w_param.0 as u32 {
+            WM_KEYDOWN => {
+                match kb_struct.vkCode {
+                    0xAD => {
+                        media_event = Some(MediaControlsEvent::VolumeToggleMute);
+                    },
+                    0xAE => {
+                        media_event = Some(MediaControlsEvent::VolumeDown);
+                    },
+                    0xAF => {
+                        media_event = Some(MediaControlsEvent::VolumeUp);
+                    },
+                    _ => { },
+                }
+            }
+            _ => (),
+        }
+    }
+
+    if let Some(media_event) = media_event {
+        // Check if current media item is yt-dlp-music-player.
+        match MediaControls::is_active() {
+            Ok(true) => {
+                // Add to queues
+                EVENT_QUEUES.iter().for_each(|event_queue| {
+                    let mut event_queue = event_queue.lock().unwrap();
+                    event_queue.push(media_event.clone());
+                });
+
+                // Cancel keypress
+                return LRESULT(1);
+            },
+            _ => {},
+        }
+    }
+
+    CallNextHookEx(HHOOK::default(), n_code, w_param, l_param)
+}
+
+static mut HOOK_PROC_INITIALIZED: bool = false;
+unsafe fn init_hook_proc(event_queue: Arc<Mutex<Vec<MediaControlsEvent>>>) -> Result<()> {
+    EVENT_QUEUES.push(event_queue);
+
+    if HOOK_PROC_INITIALIZED { return Ok(()) }
+    HOOK_PROC_INITIALIZED = true;
+
+    thread::spawn(|| {
+        let h_instance = GetModuleHandleW(None).unwrap();
+        let hook_id = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), h_instance, 0).unwrap();
+        if hook_id.is_invalid() {
+            panic!("Invalid hook!");
+        }
+    
+        let mut msg: MSG = std::mem::zeroed();
+        while GetMessageW(&mut msg, HWND(std::ptr::null_mut()), 0, 0).into() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        
+        UnhookWindowsHookEx(hook_id).unwrap();
+    });
+
+    Ok(())
+}
+
+
 
 pub struct MediaControls {
     controls: SystemMediaTransportControls,
@@ -52,6 +129,9 @@ impl MediaControls {
         self.controls.SetIsStopEnabled(true)?;
         self.controls.SetIsNextEnabled(true)?;
         self.controls.SetIsPreviousEnabled(true)?;
+        // Volume controls just do not seem to work.
+        // self.controls.SetIsChannelDownEnabled(true)?;
+        // self.controls.SetIsChannelUpEnabled(true)?;
 
         self.display_updater.SetType(MediaPlaybackType::Music)?;
 
@@ -68,6 +148,8 @@ impl MediaControls {
                     SystemMediaTransportControlsButton::Stop => Some(MediaControlsEvent::Stop),
                     SystemMediaTransportControlsButton::Next => Some(MediaControlsEvent::Next),
                     SystemMediaTransportControlsButton::Previous => Some(MediaControlsEvent::Previous),
+                    // SystemMediaTransportControlsButton::ChannelDown => Some(MediaControlsEvent::VolumeDown),
+                    // SystemMediaTransportControlsButton::ChannelUp => Some(MediaControlsEvent::VolumeUp),
                     _ => None,
                 };
 
@@ -82,6 +164,8 @@ impl MediaControls {
 
         self.button_handler_token = Some(self.controls.ButtonPressed(&button_handler)?);
 
+        unsafe { init_hook_proc(Arc::clone(&self.event_queue))? };
+
         Ok(())
     }
 
@@ -91,6 +175,21 @@ impl MediaControls {
             self.button_handler_token = None;
         }
         Ok(())
+    }
+
+    fn is_active() -> Result<bool> {
+        // TODO: Better way to test if current active session is this one.
+        let media_manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.get()?;
+        match media_manager.GetCurrentSession() {
+            Ok(media_session) => {
+                let media_properties = media_session.TryGetMediaPropertiesAsync()?.get()?;
+                match media_properties.AlbumTitle() {
+                    Ok(media_album_title) => Ok(media_album_title == "yt-dlp-music-player"),
+                    _ => Ok(false),
+                }
+            },
+            _ => Ok(false),
+        }
     }
 
 
@@ -121,6 +220,9 @@ impl MediaControls {
 
     pub fn set_metadata(&mut self, metadata: MediaControlsMetadata) -> Result<()> {
         let properties = self.display_updater.MusicProperties()?;
+
+        // TEMP: For testing volume controls.
+        properties.SetAlbumTitle(&HSTRING::from("yt-dlp-music-player"))?;
 
         if let Some(title) = metadata.title {
             properties.SetTitle(&HSTRING::from(title))?;

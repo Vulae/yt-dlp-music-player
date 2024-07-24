@@ -8,7 +8,7 @@ mod loudness_normalization;
 mod media_controls;
 
 use config::Config;
-use media_controls::{create_media_controls_multi_os, MediaControls, CreateMediaControlsMultiOSOptions, MediaControlsMetadata, MediaControlsPlayback};
+use media_controls::{create_media_controls_multi_os, CreateMediaControlsMultiOSOptions, MediaControls, MediaControlsEvent, MediaControlsMetadata, MediaControlsPlayback};
 use playlist::{Playlist, PlaylistSeekable};
 use song::Song;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -27,6 +27,8 @@ struct App {
     controls: Option<MediaControls>,
     _stream: (OutputStream, OutputStreamHandle),
     sink: Sink,
+    volume: f32,
+    muted: bool,
     playlist: Playlist,
 }
 
@@ -35,9 +37,9 @@ impl App {
         let (stream, handle) = rodio::OutputStream::try_default()?;
         let sink = Sink::try_new(&handle)?;
 
-        sink.set_volume(config.volume as f32);
-
         Ok(App {
+            volume: config.volume as f32,
+            muted: false,
             config,
             window: None,
             tray_icon: None,
@@ -111,6 +113,15 @@ impl App {
         Ok(())
     }
 
+    fn update_volume(&mut self) -> Result<()> {
+        if self.muted {
+            self.sink.set_volume(0.0);
+        } else {
+            self.sink.set_volume(self.volume as f32);
+        }
+        Ok(())
+    }
+
     fn create_window(event_loop: &ActiveEventLoop) -> Result<Window> {
         Ok(event_loop.create_window(
             Window::default_attributes()
@@ -151,11 +162,36 @@ impl App {
         if self.controls.is_some() {
             while let Some(event) = self.controls.as_mut().unwrap().next_event() {
                 match event {
-                    media_controls::MediaControlsEvent::Play => self.play()?,
-                    media_controls::MediaControlsEvent::Pause => self.pause()?,
-                    media_controls::MediaControlsEvent::Stop => self.stop()?,
-                    media_controls::MediaControlsEvent::Next => self.seek_song(1)?,
-                    media_controls::MediaControlsEvent::Previous => self.seek_song(-1)?,
+                    MediaControlsEvent::Play => self.play()?,
+                    MediaControlsEvent::Pause => self.pause()?,
+                    MediaControlsEvent::Stop => self.stop()?,
+                    MediaControlsEvent::Next => self.seek_song(1)?,
+                    MediaControlsEvent::Previous => self.seek_song(-1)?,
+                    MediaControlsEvent::VolumeToggleMute => {
+                        self.muted = !self.muted;
+                        self.update_volume()?;
+                    },
+                    MediaControlsEvent::VolumeMute => {
+                        self.muted = true;
+                        self.update_volume()?;
+                    },
+                    MediaControlsEvent::VolumeUnmute => {
+                        self.muted = false;
+                        self.update_volume()?;
+                    },
+                    MediaControlsEvent::SetVolume(volume) => {
+                        self.volume = volume.clamp(0.0, 1.0);
+                        self.update_volume()?;
+                    },
+                    MediaControlsEvent::VolumeDown => {
+                        self.volume = (self.volume - 0.1).clamp(0.0, 1.0);
+                        self.update_volume()?;
+                    },
+                    MediaControlsEvent::VolumeUp => {
+                        self.volume = (self.volume + 0.1).clamp(0.0, 1.0);
+                        self.update_volume()?;
+                    },
+                    _ => println!("{:#?}", event),
                 }
             }
         }
